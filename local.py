@@ -10,6 +10,9 @@ from urllib.request import Request, urlopen
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".github_config")
 VIDEO_EXTS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg'}
 
+def log(msg):
+    print(msg, flush=True)
+
 def load_config():
     if os.path.exists(CONFIG_FILE):
         with open(CONFIG_FILE) as f:
@@ -32,10 +35,10 @@ def github_get(url, token):
             body = resp.read().decode()
             return json.loads(body) if body else {}
     except Exception as e:
-        print(f"  API error: {e}")
+        log(f"  API GET error: {e}")
         if hasattr(e, 'read'):
             try:
-                print(f"  {e.read().decode()[:200]}")
+                log(f"  {e.read().decode()[:200]}")
             except:
                 pass
         return None
@@ -52,114 +55,93 @@ def github_post(url, token, data):
         with urlopen(req, timeout=30) as resp:
             return resp.status == 204 or resp.status == 201
     except Exception as e:
-        print(f"  Error: {e}")
+        log(f"  API POST error: {e}")
         if hasattr(e, 'read'):
             try:
-                print(f"  {e.read().decode()[:200]}")
+                log(f"  {e.read().decode()[:200]}")
             except:
                 pass
         return False
 
 def wget_download(url, output_path):
-    print(f"  wget: {os.path.basename(output_path)}")
+    log(f"  wget: {os.path.basename(output_path)}")
     result = subprocess.run(["wget", "-q", "--timeout=30", "-O", output_path, url],
                           capture_output=True, text=True)
     if result.returncode != 0:
-        print(f"  wget failed: {result.stderr[:200]}")
+        log(f"  wget failed: {result.stderr[:200]}")
         return False
     size = os.path.getsize(output_path)
-    print(f"    OK ({size/1024:.1f} KB)")
+    log(f"    OK ({size/1024:.1f} KB)")
     return True
 
 def main():
-    print("=== Telegram Downloader Pipeline ===")
-    print()
+    log("=== Telegram Downloader Pipeline ===")
+    log("")
 
     config = load_config()
-
-    if config.get("token") or config.get("repo"):
-        print("Saved settings:")
-        print(f"  Repo: {config.get('repo', 'Not set')}")
-        print(f"  Token: {'****' + config['token'][-4:] if config.get('token') else 'Not set'}")
-        change = input("Change these? (y/N): ").strip().lower()
-        if change == 'y':
-            config = {}
+    log(f"Config loaded: token={'yes' if config.get('token') else 'no'}, repo={'yes' if config.get('repo') else 'no'}")
 
     if not config.get("token"):
-        print("\nCreate a token at: https://github.com/settings/tokens/new")
-        print("  Required scopes: repo, workflow")
         config["token"] = input("GitHub token: ").strip()
-        while not config["token"]:
-            config["token"] = input("GitHub token (required): ").strip()
-
-    if not config.get("repo"):
         config["repo"] = input("GitHub repo (e.g. Hamid8338/telegram-downloder): ").strip()
-        while not config["repo"] or '/' not in config["repo"] or config["repo"].count('/') != 1:
-            print("  Invalid format. Use: username/repo-name")
-            config["repo"] = input("GitHub repo: ").strip()
-
-    save_config(config)
+        save_config(config)
+    elif not config.get("repo"):
+        config["repo"] = input("GitHub repo: ").strip()
+        save_config(config)
 
     repo = config["repo"]
     token = config["token"]
     owner, repo_name = repo.split("/")
     api_base = f"https://api.github.com/repos/{repo}"
 
-    print(f"\nVerifying access to {repo}...")
+    log(f"Verifying access to {repo}...")
     result = github_get(api_base, token)
     if result is None:
-        print("  Failed to access repo. Check your token and repo name.")
+        log("  Failed to access repo. Check your token and repo name.")
         sys.exit(1)
-    print(f"  OK - {result.get('full_name', repo)}")
+    log(f"  OK - {result.get('full_name', repo)}")
 
     if len(sys.argv) > 1:
         link = sys.argv[1].strip()
     else:
         link = input("\nTelegram post URL: ").strip()
     while not link.startswith("https://t.me/"):
-        print("  Invalid. Must start with https://t.me/...")
+        log("  Invalid. Must start with https://t.me/...")
         if len(sys.argv) > 1:
             sys.exit(1)
         link = input("Telegram post URL: ").strip()
 
-    print(f"\nTriggering workflow...")
+    log("Triggering workflow...")
+    sys.stdout.flush()
     ok = github_post(f"{api_base}/actions/workflows/tg-dl.yml/dispatches", token, {
         "ref": "main",
         "inputs": {"telegram_link": link}
     })
     if not ok:
-        print("Failed to trigger workflow. Check token has 'workflow' scope.")
+        log("Failed to trigger workflow")
         sys.exit(1)
-    print("Workflow triggered successfully")
-    trigger_time = time.time()
+    log("Workflow triggered successfully")
 
-    print("Waiting for workflow to start...")
-    time.sleep(8)
-
+    log("Waiting for workflow to start...")
+    time.sleep(10)
     run_id = None
     for attempt in range(30):
         runs = github_get(
-            f"{api_base}/actions/runs?event=workflow_dispatch&per_page=10", token)
-        if runs and runs.get("workflow_runs"):
-            for r in runs["workflow_runs"]:
-                created = r.get("run_started_at") or r.get("created_at", "")
-                if created:
-                    created_ts = time.mktime(time.strptime(created.split(".")[0].split("Z")[0],
-                        "%Y-%m-%dT%H:%M:%S"))
-                    if created_ts > trigger_time:
-                        run_id = r["id"]
-                        break
-        if run_id:
-            break
-        print(f"  Waiting... ({attempt+1})")
+            f"{api_base}/actions/runs?event=workflow_dispatch&per_page=5", token)
+        if runs and runs.get("workflow_runs") and len(runs["workflow_runs"]) > 0:
+            latest = runs["workflow_runs"][0]
+            if latest["status"] in ("in_progress", "queued", "pending", "waiting"):
+                run_id = latest["id"]
+                break
+        log(f"  Waiting... ({attempt+1})")
         time.sleep(5)
 
     if not run_id:
-        print("Could not find the workflow run")
+        log("Could not find the workflow run (still queued or delayed)")
         sys.exit(1)
 
-    print(f"\nRun ID: {run_id}")
-    print("Waiting for completion...")
+    log(f"Run ID: {run_id}")
+    log("Waiting for completion...")
 
     head_sha = None
     while True:
@@ -169,26 +151,25 @@ def main():
             continue
         status = run.get("status", "unknown")
         conclusion = run.get("conclusion") or "-"
-        print(f"  Status: {status}  Conclusion: {conclusion}")
+        log(f"  Status: {status}  Conclusion: {conclusion}")
         if status == "completed":
             head_sha = run.get("head_sha")
             break
         time.sleep(10)
 
     if conclusion != "success":
-        print(f"\nWorkflow result: {conclusion}")
+        log(f"Workflow result: {conclusion}")
         sys.exit(1)
-
     if not head_sha:
-        print("Could not get commit SHA")
+        log("Could not get commit SHA")
         sys.exit(1)
 
-    print(f"\nCommit SHA: {head_sha[:7]}")
-    print("Listing files from repo...")
+    log(f"Commit SHA: {head_sha[:7]}")
+    log("Listing files from repo...")
 
     contents = github_get(f"{api_base}/contents/downloads?ref={head_sha}", token)
     if not contents or not isinstance(contents, list):
-        print("No files found in downloads/")
+        log("No files found in downloads/")
         sys.exit(1)
 
     files_to_download = []
@@ -197,7 +178,7 @@ def main():
             files_to_download.append(item)
 
     if not files_to_download:
-        print("No files to download")
+        log("No files to download")
         sys.exit(1)
 
     dl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloaded_files")
@@ -205,18 +186,18 @@ def main():
         shutil.rmtree(dl_dir)
     os.makedirs(dl_dir)
 
-    print(f"Downloading {len(files_to_download)} files with wget...")
+    log(f"Downloading {len(files_to_download)} files with wget...")
     for item in files_to_download:
         raw_url = f"https://raw.githubusercontent.com/{repo}/{head_sha}/{item['path']}"
         out_path = os.path.join(dl_dir, item["name"])
         if not wget_download(raw_url, out_path):
-            print(f"  Failed to download {item['name']}")
+            log(f"  Failed to download {item['name']}")
 
-    print(f"\nFiles saved to: {dl_dir}")
+    log(f"Files saved to: {dl_dir}")
     files = [f for f in os.listdir(dl_dir) if os.path.isfile(os.path.join(dl_dir, f))]
     for f in files:
         size = os.path.getsize(os.path.join(dl_dir, f))
-        print(f"  {f} ({size/1024:.1f} KB)")
+        log(f"  {f} ({size/1024:.1f} KB)")
 
     video_files = []
     for f in files:
@@ -226,7 +207,7 @@ def main():
     video_files.sort()
 
     if len(video_files) > 1:
-        print(f"\nFound {len(video_files)} video files, merging...")
+        log(f"Found {len(video_files)} video files, merging...")
         if shutil.which("ffmpeg"):
             concat_list = os.path.join(dl_dir, "concat.txt")
             with open(concat_list, "w") as f:
@@ -241,22 +222,22 @@ def main():
                 for vf in video_files:
                     os.remove(vf)
                 os.remove(concat_list)
-                print(f"Merged video: {merged}")
+                log(f"Merged video: {merged}")
             else:
-                print(f"ffmpeg error: {result.stderr}")
+                log(f"ffmpeg error: {result.stderr}")
         else:
-            print("ffmpeg not found. Install: sudo apt install ffmpeg")
+            log("ffmpeg not found. Install: sudo apt install ffmpeg")
     else:
-        print(f"\n{len(video_files)} video file(s), no merge needed")
+        log(f"{len(video_files)} video file(s), no merge needed")
 
-    print("\nCleaning up GitHub repo...")
+    log("Cleaning up GitHub repo...")
     github_post(f"{api_base}/actions/workflows/cleaner.yml/dispatches", token, {
         "ref": "main"
     })
-    print("Cleaner workflow triggered")
+    log("Cleaner workflow triggered")
 
-    print("\n=== Done! ===")
-    print(f"Files are in: {dl_dir}")
+    log("=== Done! ===")
+    log(f"Files are in: {dl_dir}")
 
 if __name__ == "__main__":
     main()
