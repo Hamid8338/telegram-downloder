@@ -29,7 +29,7 @@ def github_request(method, url, token):
     }
     req = Request(url, headers=headers, method=method)
     try:
-        with urlopen(req) as resp:
+        with urlopen(req, timeout=30) as resp:
             body = resp.read().decode()
             if body:
                 return json.loads(body)
@@ -52,7 +52,7 @@ def github_post(url, token, data):
     }
     req = Request(url, headers=headers, method="POST", data=json.dumps(data).encode())
     try:
-        with urlopen(req) as resp:
+        with urlopen(req, timeout=30) as resp:
             return resp.status == 204 or resp.status == 201
     except Exception as e:
         print(f"  Error: {e}")
@@ -188,14 +188,23 @@ def main():
 
     zip_path = os.path.join(dl_dir, "artifact.zip")
 
+    print("  Downloading artifact zip...")
     req = Request(download_url, headers={
         "Authorization": f"Bearer {token}",
         "User-Agent": "local-tg-downloader"
     })
-    with urlopen(req) as resp:
+    with urlopen(req, timeout=120) as resp:
         with open(zip_path, "wb") as f:
-            f.write(resp.read())
+            size = 0
+            while True:
+                chunk = resp.read(8192)
+                if not chunk:
+                    break
+                f.write(chunk)
+                size += len(chunk)
+            print(f"  Downloaded {size/1024:.1f} KB")
 
+    print("  Extracting...")
     with zipfile.ZipFile(zip_path, "r") as zf:
         zf.extractall(dl_dir)
     os.remove(zip_path)
