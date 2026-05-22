@@ -112,9 +112,14 @@ def main():
         sys.exit(1)
     print(f"  OK - {result.get('full_name', repo)}")
 
-    link = input("\nTelegram post URL: ").strip()
+    if len(sys.argv) > 1:
+        link = sys.argv[1].strip()
+    else:
+        link = input("\nTelegram post URL: ").strip()
     while not link.startswith("https://t.me/"):
         print("  Invalid. Must start with https://t.me/...")
+        if len(sys.argv) > 1:
+            sys.exit(1)
         link = input("Telegram post URL: ").strip()
 
     print(f"\nTriggering workflow...")
