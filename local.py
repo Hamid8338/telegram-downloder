@@ -3,7 +3,6 @@ import os
 import sys
 import json
 import time
-import zipfile
 import subprocess
 import shutil
 from urllib.request import Request, urlopen
@@ -21,24 +20,22 @@ def save_config(config):
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
 
-def github_request(method, url, token):
+def github_get(url, token):
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github.v3+json",
         "User-Agent": "local-tg-downloader"
     }
-    req = Request(url, headers=headers, method=method)
+    req = Request(url, headers=headers, method="GET")
     try:
         with urlopen(req, timeout=30) as resp:
             body = resp.read().decode()
-            if body:
-                return json.loads(body)
-            return {}
+            return json.loads(body) if body else {}
     except Exception as e:
-        print(f"  GitHub API error: {e}")
+        print(f"  API error: {e}")
         if hasattr(e, 'read'):
             try:
-                print(f"  Details: {e.read().decode()}")
+                print(f"  {e.read().decode()[:200]}")
             except:
                 pass
         return None
@@ -58,10 +55,21 @@ def github_post(url, token, data):
         print(f"  Error: {e}")
         if hasattr(e, 'read'):
             try:
-                print(f"  Details: {e.read().decode()}")
+                print(f"  {e.read().decode()[:200]}")
             except:
                 pass
         return False
+
+def wget_download(url, output_path):
+    print(f"  wget: {os.path.basename(output_path)}")
+    result = subprocess.run(["wget", "-q", "--timeout=30", "-O", output_path, url],
+                          capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"  wget failed: {result.stderr[:200]}")
+        return False
+    size = os.path.getsize(output_path)
+    print(f"    OK ({size/1024:.1f} KB)")
+    return True
 
 def main():
     print("=== Telegram Downloader Pipeline ===")
@@ -94,14 +102,13 @@ def main():
 
     repo = config["repo"]
     token = config["token"]
+    owner, repo_name = repo.split("/")
     api_base = f"https://api.github.com/repos/{repo}"
 
-    # Verify token and repo work
     print(f"\nVerifying access to {repo}...")
-    result = github_request("GET", api_base, token)
+    result = github_get(api_base, token)
     if result is None:
         print("  Failed to access repo. Check your token and repo name.")
-        print("  Delete .github_config file and try again.")
         sys.exit(1)
     print(f"  OK - {result.get('full_name', repo)}")
 
@@ -125,7 +132,7 @@ def main():
 
     run_id = None
     for attempt in range(30):
-        runs = github_request("GET",
+        runs = github_get(
             f"{api_base}/actions/runs?event=workflow_dispatch&per_page=5", token)
         if runs and runs.get("workflow_runs"):
             for r in runs["workflow_runs"]:
@@ -146,8 +153,9 @@ def main():
     print(f"\nRun ID: {run_id}")
     print("Waiting for completion...")
 
+    head_sha = None
     while True:
-        run = github_request("GET", f"{api_base}/actions/runs/{run_id}", token)
+        run = github_get(f"{api_base}/actions/runs/{run_id}", token)
         if not run:
             time.sleep(10)
             continue
@@ -155,71 +163,46 @@ def main():
         conclusion = run.get("conclusion") or "-"
         print(f"  Status: {status}  Conclusion: {conclusion}")
         if status == "completed":
+            head_sha = run.get("head_sha")
             break
         time.sleep(10)
 
     if conclusion != "success":
         print(f"\nWorkflow result: {conclusion}")
-        run = github_request("GET", f"{api_base}/actions/runs/{run_id}/jobs", token)
-        if run and run.get("jobs"):
-            for job in run["jobs"]:
-                for step in job.get("steps", []):
-                    if step.get("conclusion") == "failure":
-                        print(f"  Failed step: {step['name']}")
-                        url = f"https://github.com/{repo}/actions/runs/{run_id}"
-                        print(f"  Check logs: {url}")
         sys.exit(1)
 
-    print("\nWorkflow completed successfully")
-    print("Downloading artifacts...")
-
-    artifacts = github_request("GET", f"{api_base}/actions/runs/{run_id}/artifacts", token)
-    if not artifacts or not artifacts.get("artifacts"):
-        print("No artifacts found")
+    if not head_sha:
+        print("Could not get commit SHA")
         sys.exit(1)
 
-    artifact = artifacts["artifacts"][0]
-    download_url = artifact["archive_download_url"]
+    print(f"\nCommit SHA: {head_sha[:7]}")
+    print("Listing files from repo...")
+
+    contents = github_get(f"{api_base}/contents/downloads?ref={head_sha}", token)
+    if not contents or not isinstance(contents, list):
+        print("No files found in downloads/")
+        sys.exit(1)
+
+    files_to_download = []
+    for item in contents:
+        if item["type"] == "file" and item["name"] != ".gitkeep":
+            files_to_download.append(item)
+
+    if not files_to_download:
+        print("No files to download")
+        sys.exit(1)
 
     dl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloaded_files")
     if os.path.exists(dl_dir):
         shutil.rmtree(dl_dir)
     os.makedirs(dl_dir)
 
-    zip_path = os.path.join(dl_dir, "artifact.zip")
-
-    print(f"  Downloading artifact zip...")
-    req = Request(download_url, headers={
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "local-tg-downloader"
-    })
-    try:
-        with urlopen(req, timeout=120) as resp:
-            with open(zip_path, "wb") as f:
-                total = int(resp.headers.get('Content-Length', 0))
-                downloaded = 0
-                while True:
-                    chunk = resp.read(65536)
-                    if not chunk:
-                        break
-                    f.write(chunk)
-                    downloaded += len(chunk)
-                    if total:
-                        pct = downloaded * 100 // total
-                        print(f"\r  Progress: {pct}% ({downloaded/1024:.0f}/{total/1024:.0f} KB)", end="")
-                    else:
-                        print(f"\r  Downloaded: {downloaded/1024:.0f} KB", end="")
-                print()
-    except Exception as e:
-        print(f"\n  Download failed: {e}")
-        sys.exit(1)
-    size = os.path.getsize(zip_path)
-    print(f"  Downloaded {size/1024:.1f} KB")
-
-    print("  Extracting...")
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(dl_dir)
-    os.remove(zip_path)
+    print(f"Downloading {len(files_to_download)} files with wget...")
+    for item in files_to_download:
+        raw_url = f"https://raw.githubusercontent.com/{repo}/{head_sha}/{item['path']}"
+        out_path = os.path.join(dl_dir, item["name"])
+        if not wget_download(raw_url, out_path):
+            print(f"  Failed to download {item['name']}")
 
     print(f"\nFiles saved to: {dl_dir}")
     files = [f for f in os.listdir(dl_dir) if os.path.isfile(os.path.join(dl_dir, f))]
@@ -254,9 +237,7 @@ def main():
             else:
                 print(f"ffmpeg error: {result.stderr}")
         else:
-            print("ffmpeg not found. To install:")
-            print("  Ubuntu/Debian: sudo apt install ffmpeg")
-            print("  Windows: https://ffmpeg.org/download.html")
+            print("ffmpeg not found. Install: sudo apt install ffmpeg")
     else:
         print(f"\n{len(video_files)} video file(s), no merge needed")
 
