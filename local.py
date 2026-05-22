@@ -122,6 +122,11 @@ def main():
         log("No commit SHA")
         sys.exit(1)
 
+    log(f"Getting latest commit on main...")
+    out, err, code = gh(["api", f"repos/{repo}/branches/main"])
+    if code == 0 and out:
+        data = json.loads(out)
+        head_sha = data["commit"]["sha"]
     log(f"SHA: {head_sha[:7]}")
 
     out, err, code = gh(["api", f"repos/{repo}/contents/downloads?ref={head_sha}"])
