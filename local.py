@@ -126,6 +126,7 @@ def main():
         print("Failed to trigger workflow. Check token has 'workflow' scope.")
         sys.exit(1)
     print("Workflow triggered successfully")
+    trigger_time = time.time()
 
     print("Waiting for workflow to start...")
     time.sleep(8)
@@ -133,14 +134,16 @@ def main():
     run_id = None
     for attempt in range(30):
         runs = github_get(
-            f"{api_base}/actions/runs?event=workflow_dispatch&per_page=5", token)
+            f"{api_base}/actions/runs?event=workflow_dispatch&per_page=10", token)
         if runs and runs.get("workflow_runs"):
             for r in runs["workflow_runs"]:
-                if r["status"] in ("in_progress", "queued", "pending", "waiting"):
-                    run_id = r["id"]
-                    break
-            if not run_id:
-                run_id = runs["workflow_runs"][0]["id"]
+                created = r.get("run_started_at") or r.get("created_at", "")
+                if created:
+                    created_ts = time.mktime(time.strptime(created.split(".")[0].split("Z")[0],
+                        "%Y-%m-%dT%H:%M:%S"))
+                    if created_ts > trigger_time:
+                        run_id = r["id"]
+                        break
         if run_id:
             break
         print(f"  Waiting... ({attempt+1})")
