@@ -188,21 +188,19 @@ def main():
 
     zip_path = os.path.join(dl_dir, "artifact.zip")
 
-    print("  Downloading artifact zip...")
-    req = Request(download_url, headers={
-        "Authorization": f"Bearer {token}",
-        "User-Agent": "local-tg-downloader"
-    })
-    with urlopen(req, timeout=120) as resp:
-        with open(zip_path, "wb") as f:
-            size = 0
-            while True:
-                chunk = resp.read(8192)
-                if not chunk:
-                    break
-                f.write(chunk)
-                size += len(chunk)
-            print(f"  Downloaded {size/1024:.1f} KB")
+    print("  Downloading artifact zip with wget...")
+    result = subprocess.run([
+        "wget", "-q", "--show-progress",
+        "--header", f"Authorization: Bearer {token}",
+        "--header", "User-Agent: local-tg-downloader",
+        "-O", zip_path,
+        download_url
+    ])
+    if result.returncode != 0:
+        print("  wget failed")
+        sys.exit(1)
+    size = os.path.getsize(zip_path)
+    print(f"  Downloaded {size/1024:.1f} KB")
 
     print("  Extracting...")
     with zipfile.ZipFile(zip_path, "r") as zf:
