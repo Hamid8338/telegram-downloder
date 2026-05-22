@@ -13,14 +13,9 @@ jobs:
   tg-download:
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    permissions:
-      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -56,18 +51,9 @@ jobs:
         run: |
           python scripts/merge_videos.py
 
-      - name: Commit and push downloaded files
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add downloads/
-          if git diff --staged --quiet; then
-            echo "No files to commit"
-          else
-            git commit -m "Download from: ${{ github.event.inputs.telegram_link }}"
-            git push
-          fi
-
-      - name: Run cleaner
-        run: |
-          python scripts/cleaner.py
+      - name: Upload downloaded files as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-files
+          path: downloads/
+          retention-days: 1

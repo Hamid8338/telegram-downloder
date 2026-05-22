@@ -1,4 +1,6 @@
 downloads/*
 !downloads/.gitkeep
+downloaded_files/
 __pycache__/
 *.pyc
+.github_config

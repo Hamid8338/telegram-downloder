@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import glob
+import time
 
 DOWNLOAD_DIR = "downloads"
 VIDEO_EXTS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg'}
@@ -78,5 +79,4 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    import time
     main()
