@@ -156,13 +156,18 @@ def main():
         raw_url = f"https://raw.githubusercontent.com/{repo}/{head_sha}/{item['path']}"
         out_path = os.path.join(dl_dir, item["name"])
         log(f"  wget: {item['name']}")
+        log(f"    URL: {raw_url[:80]}...")
         r = subprocess.run(["wget", "-q", "--timeout=30", "-O", out_path, raw_url],
                           capture_output=True, text=True)
         if r.returncode == 0:
             size = os.path.getsize(out_path)
             log(f"    OK ({size/1024:.1f} KB)")
         else:
-            log(f"    Failed: {r.stderr[:100]}")
+            log(f"    Failed (code={r.returncode})")
+            if r.stderr:
+                log(f"    stderr: {r.stderr[:200]}")
+            if r.stdout:
+                log(f"    stdout: {r.stdout[:200]}")
 
     log(f"\nFiles: {dl_dir}")
     files = [f for f in os.listdir(dl_dir) if os.path.isfile(os.path.join(dl_dir, f))]
