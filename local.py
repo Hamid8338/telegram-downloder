@@ -5,13 +5,23 @@ import json
 import time
 import subprocess
 import shutil
-from urllib.request import Request, urlopen
+import re
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".github_config")
 VIDEO_EXTS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg'}
 
 def log(msg):
     print(msg, flush=True)
+
+def gh(args, capture=True):
+    cmd = [os.path.expanduser("~/.local/bin/gh")] + args
+    env = os.environ.copy()
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+    if result.returncode != 0 and capture:
+        log(f"  gh error: {result.stderr.strip()[:200]}")
+    if capture:
+        return result.stdout.strip(), result.stderr.strip(), result.returncode
+    return "", "", result.returncode
 
 def load_config():
     if os.path.exists(CONFIG_FILE):
@@ -23,162 +33,110 @@ def save_config(config):
     with open(CONFIG_FILE, 'w') as f:
         json.dump(config, f, indent=2)
 
-def github_get(url, token):
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "local-tg-downloader"
-    }
-    req = Request(url, headers=headers, method="GET")
-    try:
-        with urlopen(req, timeout=30) as resp:
-            body = resp.read().decode()
-            return json.loads(body) if body else {}
-    except Exception as e:
-        log(f"  API GET error: {e}")
-        if hasattr(e, 'read'):
-            try:
-                log(f"  {e.read().decode()[:200]}")
-            except:
-                pass
-        return None
-
-def github_post(url, token, data):
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/vnd.github.v3+json",
-        "User-Agent": "local-tg-downloader",
-        "Content-Type": "application/json"
-    }
-    req = Request(url, headers=headers, method="POST", data=json.dumps(data).encode())
-    try:
-        with urlopen(req, timeout=30) as resp:
-            return resp.status == 204 or resp.status == 201
-    except Exception as e:
-        log(f"  API POST error: {e}")
-        if hasattr(e, 'read'):
-            try:
-                log(f"  {e.read().decode()[:200]}")
-            except:
-                pass
-        return False
-
-def wget_download(url, output_path):
-    log(f"  wget: {os.path.basename(output_path)}")
-    result = subprocess.run(["wget", "-q", "--timeout=30", "-O", output_path, url],
-                          capture_output=True, text=True)
-    if result.returncode != 0:
-        log(f"  wget failed: {result.stderr[:200]}")
-        return False
-    size = os.path.getsize(output_path)
-    log(f"    OK ({size/1024:.1f} KB)")
-    return True
-
 def main():
     log("=== Telegram Downloader Pipeline ===")
     log("")
 
     config = load_config()
-    log(f"Config loaded: token={'yes' if config.get('token') else 'no'}, repo={'yes' if config.get('repo') else 'no'}")
+    if config.get("token"):
+        os.environ["GH_TOKEN"] = config["token"]
 
     if not config.get("token"):
         config["token"] = input("GitHub token: ").strip()
         config["repo"] = input("GitHub repo (e.g. Hamid8338/telegram-downloder): ").strip()
+        os.environ["GH_TOKEN"] = config["token"]
         save_config(config)
     elif not config.get("repo"):
         config["repo"] = input("GitHub repo: ").strip()
         save_config(config)
 
     repo = config["repo"]
-    token = config["token"]
-    owner, repo_name = repo.split("/")
-    api_base = f"https://api.github.com/repos/{repo}"
+    os.environ["GH_TOKEN"] = config["token"]
 
-    log(f"Verifying access to {repo}...")
-    result = github_get(api_base, token)
-    if result is None:
-        log("  Failed to access repo. Check your token and repo name.")
+    log(f"Checking {repo}...")
+    out, err, code = gh(["repo", "view", repo, "--json", "name"])
+    if code != 0:
+        log(f"  Failed to access repo")
         sys.exit(1)
-    log(f"  OK - {result.get('full_name', repo)}")
+    log(f"  OK")
 
     if len(sys.argv) > 1:
         link = sys.argv[1].strip()
     else:
         link = input("\nTelegram post URL: ").strip()
     while not link.startswith("https://t.me/"):
-        log("  Invalid. Must start with https://t.me/...")
+        log("  Invalid link")
         if len(sys.argv) > 1:
             sys.exit(1)
         link = input("Telegram post URL: ").strip()
 
     log("Triggering workflow...")
-    sys.stdout.flush()
-    ok = github_post(f"{api_base}/actions/workflows/tg-dl.yml/dispatches", token, {
-        "ref": "main",
-        "inputs": {"telegram_link": link}
-    })
-    if not ok:
-        log("Failed to trigger workflow")
+    out, err, code = gh(["workflow", "run", "tg-dl.yml", "-f", f"telegram_link={link}"])
+    if code != 0:
+        log("  Failed to trigger")
         sys.exit(1)
-    log("Workflow triggered successfully")
+    log("  Done")
 
-    log("Waiting for workflow to start...")
-    time.sleep(10)
+    log("Waiting for run to start...")
+    time.sleep(8)
+
     run_id = None
     for attempt in range(30):
-        runs = github_get(
-            f"{api_base}/actions/runs?event=workflow_dispatch&per_page=5", token)
-        if runs and runs.get("workflow_runs") and len(runs["workflow_runs"]) > 0:
-            latest = runs["workflow_runs"][0]
-            if latest["status"] in ("in_progress", "queued", "pending", "waiting"):
-                run_id = latest["id"]
-                break
+        out, err, code = gh(["run", "list", "--workflow=tg-dl.yml", "--limit=5",
+                             "--json=databaseId,status,conclusion,displayTitle"])
+        if code == 0 and out:
+            runs = json.loads(out)
+            for r in runs:
+                if r["status"] in ("in_progress", "queued", "pending", "waiting"):
+                    run_id = r["databaseId"]
+                    break
+        if run_id:
+            break
         log(f"  Waiting... ({attempt+1})")
         time.sleep(5)
 
     if not run_id:
-        log("Could not find the workflow run (still queued or delayed)")
+        log("Could not find run")
         sys.exit(1)
 
-    log(f"Run ID: {run_id}")
+    log(f"Run: {run_id}")
     log("Waiting for completion...")
 
-    head_sha = None
     while True:
-        run = github_get(f"{api_base}/actions/runs/{run_id}", token)
-        if not run:
-            time.sleep(10)
-            continue
-        status = run.get("status", "unknown")
-        conclusion = run.get("conclusion") or "-"
-        log(f"  Status: {status}  Conclusion: {conclusion}")
-        if status == "completed":
-            head_sha = run.get("head_sha")
-            break
+        out, err, code = gh(["run", "view", str(run_id),
+                             "--json=status,conclusion,headSha"])
+        if code == 0 and out:
+            data = json.loads(out)
+            status = data["status"]
+            conclusion = data.get("conclusion") or "-"
+            log(f"  Status: {status}  Conclusion: {conclusion}")
+            if status == "completed":
+                head_sha = data.get("headSha")
+                break
         time.sleep(10)
 
     if conclusion != "success":
-        log(f"Workflow result: {conclusion}")
+        log(f"Workflow failed: {conclusion}")
         sys.exit(1)
     if not head_sha:
-        log("Could not get commit SHA")
+        log("No commit SHA")
         sys.exit(1)
 
-    log(f"Commit SHA: {head_sha[:7]}")
-    log("Listing files from repo...")
+    log(f"SHA: {head_sha[:7]}")
 
-    contents = github_get(f"{api_base}/contents/downloads?ref={head_sha}", token)
-    if not contents or not isinstance(contents, list):
-        log("No files found in downloads/")
+    out, err, code = gh(["api", f"repos/{repo}/contents/downloads?ref={head_sha}"])
+    if code != 0 or not out:
+        log("No files in downloads/")
         sys.exit(1)
 
-    files_to_download = []
-    for item in contents:
-        if item["type"] == "file" and item["name"] != ".gitkeep":
-            files_to_download.append(item)
+    try:
+        contents = json.loads(out)
+    except:
+        log("No files found")
+        sys.exit(1)
 
-    if not files_to_download:
-        log("No files to download")
+    if not isinstance(contents, list):
+        log("No files found")
         sys.exit(1)
 
     dl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloaded_files")
@@ -186,58 +144,62 @@ def main():
         shutil.rmtree(dl_dir)
     os.makedirs(dl_dir)
 
-    log(f"Downloading {len(files_to_download)} files with wget...")
-    for item in files_to_download:
+    files_to_get = [i for i in contents if i["type"] == "file" and i["name"] != ".gitkeep"]
+    log(f"Downloading {len(files_to_get)} files with wget...")
+
+    for item in files_to_get:
         raw_url = f"https://raw.githubusercontent.com/{repo}/{head_sha}/{item['path']}"
         out_path = os.path.join(dl_dir, item["name"])
-        if not wget_download(raw_url, out_path):
-            log(f"  Failed to download {item['name']}")
+        log(f"  wget: {item['name']}")
+        r = subprocess.run(["wget", "-q", "--timeout=30", "-O", out_path, raw_url],
+                          capture_output=True, text=True)
+        if r.returncode == 0:
+            size = os.path.getsize(out_path)
+            log(f"    OK ({size/1024:.1f} KB)")
+        else:
+            log(f"    Failed: {r.stderr[:100]}")
 
-    log(f"Files saved to: {dl_dir}")
+    log(f"\nFiles: {dl_dir}")
     files = [f for f in os.listdir(dl_dir) if os.path.isfile(os.path.join(dl_dir, f))]
     for f in files:
-        size = os.path.getsize(os.path.join(dl_dir, f))
-        log(f"  {f} ({size/1024:.1f} KB)")
+        sz = os.path.getsize(os.path.join(dl_dir, f))
+        log(f"  {f} ({sz/1024:.1f} KB)")
 
-    video_files = []
+    videos = []
     for f in files:
-        ext = os.path.splitext(f)[1].lower()
-        if ext in VIDEO_EXTS:
-            video_files.append(os.path.join(dl_dir, f))
-    video_files.sort()
+        if os.path.splitext(f)[1].lower() in VIDEO_EXTS:
+            videos.append(os.path.join(dl_dir, f))
+    videos.sort()
 
-    if len(video_files) > 1:
-        log(f"Found {len(video_files)} video files, merging...")
+    if len(videos) > 1:
+        log(f"Merging {len(videos)} videos...")
         if shutil.which("ffmpeg"):
-            concat_list = os.path.join(dl_dir, "concat.txt")
-            with open(concat_list, "w") as f:
-                for vf in video_files:
-                    f.write(f"file '{os.path.abspath(vf)}'\n")
-
+            cl = os.path.join(dl_dir, "concat.txt")
+            with open(cl, "w") as f:
+                for v in videos:
+                    f.write(f"file '{os.path.abspath(v)}'\n")
             merged = os.path.join(dl_dir, "merged_video.mp4")
-            cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0",
-                   "-i", concat_list, "-c", "copy", merged]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            if result.returncode == 0:
-                for vf in video_files:
-                    os.remove(vf)
-                os.remove(concat_list)
-                log(f"Merged video: {merged}")
+            r = subprocess.run(["ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                               "-i", cl, "-c", "copy", merged],
+                              capture_output=True, text=True)
+            if r.returncode == 0:
+                for v in videos:
+                    os.remove(v)
+                os.remove(cl)
+                log(f"Merged: {merged}")
             else:
-                log(f"ffmpeg error: {result.stderr}")
+                log(f"ffmpeg error: {r.stderr[:200]}")
         else:
-            log("ffmpeg not found. Install: sudo apt install ffmpeg")
+            log("Install ffmpeg: sudo apt install ffmpeg")
     else:
-        log(f"{len(video_files)} video file(s), no merge needed")
+        log(f"{len(videos)} video(s), no merge")
 
-    log("Cleaning up GitHub repo...")
-    github_post(f"{api_base}/actions/workflows/cleaner.yml/dispatches", token, {
-        "ref": "main"
-    })
-    log("Cleaner workflow triggered")
+    log("\nTriggering cleaner...")
+    gh(["workflow", "run", "cleaner.yml"])
+    log("Cleaner triggered")
 
-    log("=== Done! ===")
-    log(f"Files are in: {dl_dir}")
+    log("\n=== Done! ===")
+    log(f"Files: {dl_dir}")
 
 if __name__ == "__main__":
     main()
