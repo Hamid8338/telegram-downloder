@@ -190,14 +190,18 @@ def main():
 
     print("  Downloading artifact zip with curl...")
     result = subprocess.run([
-        "curl", "-L", "-s",
+        "curl", "-L", "-f",
         "-H", f"Authorization: Bearer {token}",
         "-H", "User-Agent: local-tg-downloader",
         "-o", zip_path,
         download_url
-    ])
+    ], capture_output=True, text=True)
     if result.returncode != 0:
-        print("  curl failed")
+        print(f"  curl failed (exit code: {result.returncode})")
+        if result.stderr:
+            print(f"  Error: {result.stderr[:500]}")
+        if result.stdout:
+            print(f"  Output: {result.stdout[:500]}")
         sys.exit(1)
     size = os.path.getsize(zip_path)
     print(f"  Downloaded {size/1024:.1f} KB")
