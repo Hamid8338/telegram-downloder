@@ -188,16 +188,16 @@ def main():
 
     zip_path = os.path.join(dl_dir, "artifact.zip")
 
-    print("  Downloading artifact zip with wget...")
+    print("  Downloading artifact zip with curl...")
     result = subprocess.run([
-        "wget", "-q", "--show-progress",
-        "--header", f"Authorization: Bearer {token}",
-        "--header", "User-Agent: local-tg-downloader",
-        "-O", zip_path,
+        "curl", "-L", "-s",
+        "-H", f"Authorization: Bearer {token}",
+        "-H", "User-Agent: local-tg-downloader",
+        "-o", zip_path,
         download_url
     ])
     if result.returncode != 0:
-        print("  wget failed")
+        print("  curl failed")
         sys.exit(1)
     size = os.path.getsize(zip_path)
     print(f"  Downloaded {size/1024:.1f} KB")
