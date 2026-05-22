@@ -188,14 +188,16 @@ def main():
 
     zip_path = os.path.join(dl_dir, "artifact.zip")
 
-    print("  Downloading artifact zip with curl...")
-    result = subprocess.run([
+    print(f"  Downloading artifact zip with curl...")
+    print(f"  URL: {download_url}")
+    cmd_list = [
         "curl", "-L", "-f",
         "-H", f"Authorization: Bearer {token}",
         "-H", "User-Agent: local-tg-downloader",
         "-o", zip_path,
         download_url
-    ], capture_output=True, text=True)
+    ]
+    result = subprocess.run(cmd_list, capture_output=True, text=True, timeout=120)
     if result.returncode != 0:
         print(f"  curl failed (exit code: {result.returncode})")
         if result.stderr:
