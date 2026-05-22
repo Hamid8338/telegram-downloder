@@ -188,22 +188,30 @@ def main():
 
     zip_path = os.path.join(dl_dir, "artifact.zip")
 
-    print(f"  Downloading artifact zip with curl...")
-    print(f"  URL: {download_url}")
-    cmd_list = [
-        "curl", "-L", "-f",
-        "-H", f"Authorization: Bearer {token}",
-        "-H", "User-Agent: local-tg-downloader",
-        "-o", zip_path,
-        download_url
-    ]
-    result = subprocess.run(cmd_list, capture_output=True, text=True, timeout=120)
-    if result.returncode != 0:
-        print(f"  curl failed (exit code: {result.returncode})")
-        if result.stderr:
-            print(f"  Error: {result.stderr[:500]}")
-        if result.stdout:
-            print(f"  Output: {result.stdout[:500]}")
+    print(f"  Downloading artifact zip...")
+    req = Request(download_url, headers={
+        "Authorization": f"Bearer {token}",
+        "User-Agent": "local-tg-downloader"
+    })
+    try:
+        with urlopen(req, timeout=120) as resp:
+            with open(zip_path, "wb") as f:
+                total = int(resp.headers.get('Content-Length', 0))
+                downloaded = 0
+                while True:
+                    chunk = resp.read(65536)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total:
+                        pct = downloaded * 100 // total
+                        print(f"\r  Progress: {pct}% ({downloaded/1024:.0f}/{total/1024:.0f} KB)", end="")
+                    else:
+                        print(f"\r  Downloaded: {downloaded/1024:.0f} KB", end="")
+                print()
+    except Exception as e:
+        print(f"\n  Download failed: {e}")
         sys.exit(1)
     size = os.path.getsize(zip_path)
     print(f"  Downloaded {size/1024:.1f} KB")
