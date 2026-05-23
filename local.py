@@ -7,10 +7,21 @@ import subprocess
 import shutil
 
 GH = os.path.expanduser("~/.local/bin/gh")
+CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".github_config")
 VIDEO_EXTS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg'}
 
 def log(m):
     print(m, flush=True)
+
+def load_config():
+    if os.path.exists(CONFIG):
+        with open(CONFIG) as f:
+            return json.load(f)
+    return {}
+
+def save_config(c):
+    with open(CONFIG, 'w') as f:
+        json.dump(c, f, indent=2)
 
 def sh(cmd):
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
@@ -23,7 +34,16 @@ def main():
     log("=== Telegram Downloader ===")
     log("")
 
-    repo = "Hamid8338/telegram-downloder"
+    cfg = load_config()
+    if cfg.get("token"):
+        os.environ["GH_TOKEN"] = cfg["token"]
+    elif not os.environ.get("GH_TOKEN"):
+        t = input("GitHub token: ").strip()
+        r = input("Repo (Hamid8338/telegram-downloder): ").strip() or "Hamid8338/telegram-downloder"
+        os.environ["GH_TOKEN"] = t
+        save_config({"token": t, "repo": r})
+
+    repo = cfg.get("repo") or "Hamid8338/telegram-downloder"
 
     log(f"Checking {repo}...")
     o, e, c = gh(["repo", "view", repo, "--json", "name"])
