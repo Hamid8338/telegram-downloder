@@ -5,143 +5,98 @@ import json
 import time
 import subprocess
 import shutil
-import re
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".github_config")
+GH = os.path.expanduser("~/.local/bin/gh")
 VIDEO_EXTS = {'.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg'}
 
-def log(msg):
-    print(msg, flush=True)
+def log(m):
+    print(m, flush=True)
 
-def gh(args, capture=True):
-    cmd = [os.path.expanduser("~/.local/bin/gh")] + args
-    env = os.environ.copy()
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
-    if result.returncode != 0 and capture:
-        log(f"  gh error: {result.stderr.strip()[:200]}")
-    if capture:
-        return result.stdout.strip(), result.stderr.strip(), result.returncode
-    return "", "", result.returncode
+def sh(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    return r.stdout.strip(), r.stderr.strip(), r.returncode
 
-def load_config():
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE) as f:
-            return json.load(f)
-    return {}
-
-def save_config(config):
-    with open(CONFIG_FILE, 'w') as f:
-        json.dump(config, f, indent=2)
+def gh(args):
+    return sh([GH] + args)
 
 def main():
-    log("=== Telegram Downloader Pipeline ===")
+    log("=== Telegram Downloader ===")
     log("")
 
-    config = load_config()
-    if config.get("token"):
-        os.environ["GH_TOKEN"] = config["token"]
-
-    if not config.get("token"):
-        config["token"] = input("GitHub token: ").strip()
-        config["repo"] = input("GitHub repo (e.g. Hamid8338/telegram-downloder): ").strip()
-        os.environ["GH_TOKEN"] = config["token"]
-        save_config(config)
-    elif not config.get("repo"):
-        config["repo"] = input("GitHub repo: ").strip()
-        save_config(config)
-
-    repo = config["repo"]
-    os.environ["GH_TOKEN"] = config["token"]
+    repo = "Hamid8338/telegram-downloder"
 
     log(f"Checking {repo}...")
-    out, err, code = gh(["repo", "view", repo, "--json", "name"])
-    if code != 0:
-        log(f"  Failed to access repo")
+    o, e, c = gh(["repo", "view", repo, "--json", "name"])
+    if c != 0:
+        log(f"Error: {e}")
         sys.exit(1)
-    log(f"  OK")
+    log("OK")
 
-    if len(sys.argv) > 1:
-        link = sys.argv[1].strip()
-    else:
-        link = input("\nTelegram post URL: ").strip()
+    link = sys.argv[1] if len(sys.argv) > 1 else input("Telegram link: ").strip()
     while not link.startswith("https://t.me/"):
-        log("  Invalid link")
-        if len(sys.argv) > 1:
-            sys.exit(1)
-        link = input("Telegram post URL: ").strip()
+        link = input("Telegram link: ").strip()
 
     log("Triggering workflow...")
-    out, err, code = gh(["workflow", "run", "tg-dl.yml", "-f", f"telegram_link={link}"])
-    if code != 0:
-        log("  Failed to trigger")
+    o, e, c = gh(["workflow", "run", "tg-dl.yml", "-f", f"telegram_link={link}"])
+    if c != 0:
+        log(f"Failed: {e}")
         sys.exit(1)
-    log("  Done")
+    log("Done")
 
-    log("Waiting for run to start...")
-    time.sleep(8)
-
+    log("Waiting for run...")
+    time.sleep(10)
     run_id = None
-    for attempt in range(30):
-        out, err, code = gh(["run", "list", "--workflow=tg-dl.yml", "--limit=5",
-                             "--json=databaseId,status,conclusion,displayTitle"])
-        if code == 0 and out:
-            runs = json.loads(out)
-            for r in runs:
+    for i in range(30):
+        o, e, c = gh(["run", "list", "--workflow=tg-dl.yml", "--limit=5",
+                       "--json=databaseId,status,conclusion"])
+        if c == 0 and o:
+            for r in json.loads(o):
                 if r["status"] in ("in_progress", "queued", "pending", "waiting"):
                     run_id = r["databaseId"]
                     break
         if run_id:
             break
-        log(f"  Waiting... ({attempt+1})")
+        log(f"  Waiting... ({i+1})")
         time.sleep(5)
 
     if not run_id:
-        log("Could not find run")
+        log("Run not found")
         sys.exit(1)
 
     log(f"Run: {run_id}")
-    log("Waiting for completion...")
-
     while True:
-        out, err, code = gh(["run", "view", str(run_id),
-                             "--json=status,conclusion,headSha"])
-        if code == 0 and out:
-            data = json.loads(out)
-            status = data["status"]
-            conclusion = data.get("conclusion") or "-"
-            log(f"  Status: {status}  Conclusion: {conclusion}")
-            if status == "completed":
-                head_sha = data.get("headSha")
+        o, e, c = gh(["run", "view", str(run_id), "--json=status,conclusion"])
+        if c == 0 and o:
+            d = json.loads(o)
+            s, cn = d["status"], d.get("conclusion", "-")
+            log(f"  {s} / {cn}")
+            if s == "completed":
+                if cn != "success":
+                    log(f"Failed: {cn}")
+                    sys.exit(1)
                 break
         time.sleep(10)
 
-    if conclusion != "success":
-        log(f"Workflow failed: {conclusion}")
+    log("Getting latest commit...")
+    o, e, c = gh(["api", f"repos/{repo}/branches/main"])
+    if c != 0:
+        log("Failed to get commit")
         sys.exit(1)
-    if not head_sha:
-        log("No commit SHA")
+    sha = json.loads(o)["commit"]["sha"]
+    log(f"SHA: {sha[:7]}")
+
+    log("Listing files...")
+    o, e, c = gh(["api", f"repos/{repo}/contents/downloads?ref={sha}"])
+    if c != 0 or not o:
+        log("No files")
         sys.exit(1)
-
-    log(f"Getting latest commit on main...")
-    out, err, code = gh(["api", f"repos/{repo}/branches/main"])
-    if code == 0 and out:
-        data = json.loads(out)
-        head_sha = data["commit"]["sha"]
-    log(f"SHA: {head_sha[:7]}")
-
-    out, err, code = gh(["api", f"repos/{repo}/contents/downloads?ref={head_sha}"])
-    if code != 0 or not out:
-        log("No files in downloads/")
-        sys.exit(1)
-
     try:
-        contents = json.loads(out)
+        items = json.loads(o)
     except:
-        log("No files found")
+        log("No files")
         sys.exit(1)
-
-    if not isinstance(contents, list):
-        log("No files found")
+    if not isinstance(items, list):
+        log("No files")
         sys.exit(1)
 
     dl_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "downloaded_files")
@@ -149,40 +104,33 @@ def main():
         shutil.rmtree(dl_dir)
     os.makedirs(dl_dir)
 
-    files_to_get = [i for i in contents if i["type"] == "file" and i["name"] != ".gitkeep"]
-    log(f"Downloading {len(files_to_get)} files with wget...")
+    files = [i for i in items if i["type"] == "file" and i["name"] != ".gitkeep"]
+    log(f"Downloading {len(files)} file(s) with wget...")
 
-    for item in files_to_get:
-        raw_url = f"https://raw.githubusercontent.com/{repo}/{head_sha}/{item['path']}"
-        out_path = os.path.join(dl_dir, item["name"])
-        log(f"  wget: {item['name']}")
-        log(f"    URL: {raw_url[:80]}...")
-        r = subprocess.run(["wget", "-q", "--timeout=30", "-O", out_path, raw_url],
+    for f in files:
+        url = f"https://raw.githubusercontent.com/{repo}/{sha}/{f['path']}"
+        out = os.path.join(dl_dir, f["name"])
+        log(f"  {f['name']}")
+        r = subprocess.run(["wget", "-q", "--timeout=30", "-O", out, url],
                           capture_output=True, text=True)
         if r.returncode == 0:
-            size = os.path.getsize(out_path)
-            log(f"    OK ({size/1024:.1f} KB)")
+            sz = os.path.getsize(out)
+            log(f"    OK ({sz/1024:.1f} KB)")
         else:
-            log(f"    Failed (code={r.returncode})")
-            if r.stderr:
-                log(f"    stderr: {r.stderr[:200]}")
-            if r.stdout:
-                log(f"    stdout: {r.stdout[:200]}")
+            log(f"    FAILED")
 
-    log(f"\nFiles: {dl_dir}")
-    files = [f for f in os.listdir(dl_dir) if os.path.isfile(os.path.join(dl_dir, f))]
-    for f in files:
-        sz = os.path.getsize(os.path.join(dl_dir, f))
-        log(f"  {f} ({sz/1024:.1f} KB)")
+    log(f"\nFiles in {dl_dir}:")
+    for f in os.listdir(dl_dir):
+        fp = os.path.join(dl_dir, f)
+        if os.path.isfile(fp):
+            log(f"  {f} ({os.path.getsize(fp)/1024:.1f} KB)")
 
-    videos = []
-    for f in files:
-        if os.path.splitext(f)[1].lower() in VIDEO_EXTS:
-            videos.append(os.path.join(dl_dir, f))
-    videos.sort()
+    videos = sorted([os.path.join(dl_dir, f) for f in os.listdir(dl_dir)
+                     if os.path.isfile(os.path.join(dl_dir, f))
+                     and os.path.splitext(f)[1].lower() in VIDEO_EXTS])
 
     if len(videos) > 1:
-        log(f"Merging {len(videos)} videos...")
+        log(f"\nMerging {len(videos)} videos...")
         if shutil.which("ffmpeg"):
             cl = os.path.join(dl_dir, "concat.txt")
             with open(cl, "w") as f:
@@ -196,20 +144,13 @@ def main():
                 for v in videos:
                     os.remove(v)
                 os.remove(cl)
-                log(f"Merged: {merged}")
+                log(f"  Merged: merged_video.mp4")
             else:
-                log(f"ffmpeg error: {r.stderr[:200]}")
+                log(f"  ffmpeg error")
         else:
-            log("Install ffmpeg: sudo apt install ffmpeg")
-    else:
-        log(f"{len(videos)} video(s), no merge")
+            log("  Install ffmpeg: sudo apt install ffmpeg")
 
-    log("\nTriggering cleaner...")
-    gh(["workflow", "run", "cleaner.yml"])
-    log("Cleaner triggered")
-
-    log("\n=== Done! ===")
-    log(f"Files: {dl_dir}")
+    log("\nDone!")
 
 if __name__ == "__main__":
     main()
